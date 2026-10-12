@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+'use strict';
+
+/**
+ * E2E tests — full caller lifecycle across separate processes (file store),
+ * backfill path, and the Python Pipecat adapter.
+ * Run: node test/e2e.cjs   (or npm run e2e)
+ */
+
+const assert = require('assert');
+const { execFileSync, execSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+let passed = 0;
+function t(name, fn) {
+  try {
+    fn();
+    passed++;
+    console.log('  ok -', name);
+  } catch (e) {
+    console.error('  FAIL -', name, '\n   ', e.message);
+    process.exitCode = 1;
+  }
+}
+
+const ROOT = path.join(__dirname, '..');
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vm-e2e-'));
+const STORE = path.join(tmpDir, 'store.json');
+
+function runNode(script) {
+  return execFileSync('node', ['-e', script], { cwd: ROOT, encoding: 'utf8' });
+}
+
+const CALL_1 = 'Caller: Hi, my name is Priya. I prefer text messages, never voicemail. ' +
+  'My email is priya@example.com. I am still waiting on the March invoice.';
+const CALL_2 = 'Caller: Just checking on the March invoice. Also that is resolved about the login issue, thanks.';
+
+console.log('e2e: two-call lifecycle across processes');
+t('process 1 records call 1 (PII redacted)', () => {
+  const out = runNode(`
+    const {VoiceMemory} = require('./src/index');
+    const vm = new VoiceMemory({storePath: '${STORE}'});
+    const b = vm.recordCall('caller-1', {transcript: ${JSON.stringify(CALL_1)}});
+    console.log(JSON.stringify({calls: b.callCount, prefs: b.preferences.length,
+      threads: b.openThreads.length, hasEmail: JSON.stringify(b).includes('priya@example.com')}));
+  `);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.calls, 1);
+  assert.strictEqual(r.prefs, 1);
+  assert.strictEqual(r.threads, 1);
+  assert.strictEqual(r.hasEmail, false, 'email must be redacted in store');
+});
+
+t('process 2 (restart) sees the brief and injects it', () => {
+  const out = runNode(`
+    const {VoiceMemory} = require('./src/index');
+    const vm = new VoiceMemory({storePath: '${STORE}'});
+    const inj = vm.buildInjection('caller-1');
+    console.log(JSON.stringify({hasName: inj.includes('Priya'), hasPref: inj.includes('text messages'),
+      hasThread: inj.includes('March invoice'), empty: inj === ''}));
+  `);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.hasName, true);
+  assert.strictEqual(r.hasPref, true);
+  assert.strictEqual(r.hasThread, true);
+  assert.strictEqual(r.empty, false);
+});
+
+t('process 3 records call 2, open thread persists, resolution recorded', () => {
+  const out = runNode(`
+    const {VoiceMemory} = require('./src/index');
+    const vm = new VoiceMemory({storePath: '${STORE}'});
+    const b = vm.recordCall('caller-1', {transcript: ${JSON.stringify(CALL_2)}});
+    console.log(JSON.stringify({calls: b.callCount,
+      threads: b.openThreads.map(t => t.text), resolved: b.resolvedItems.length}));
+  `);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.calls, 2);
+  assert.ok(r.threads.some((x) => x.includes('March invoice')), 'invoice thread stays open');
+  assert.ok(r.resolved >= 1, 'login resolution recorded');
+});
+
+t('store file is valid JSON with expected shape', () => {
+  const data = JSON.parse(fs.readFileSync(STORE, 'utf8'));
+  assert.strictEqual(data.version, 1);
+  assert.ok(data.callers['caller-1']);
+  assert.strictEqual(data.callers['caller-1'].displayName, 'Priya');
+});
+
+t('planFlow skips the preferences step on call 3', () => {
+  const out = runNode(`
+    const {VoiceMemory} = require('./src/index');
+    const vm = new VoiceMemory({storePath: '${STORE}'});
+    const steps = vm.planFlow('caller-1', [
+      {id: 'prefs', label: 'Ask contact preferences', keywords: ['text messages']},
+      {id: 'invoice', label: 'Invoice follow-up', keywords: ['march invoice']}
+    ]);
+    console.log(JSON.stringify(steps.map(s => [s.id, s.skippable])));
+  `);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.deepStrictEqual(r, [['prefs', true], ['invoice', false]]);
+});
+
+console.log('e2e: backfill path');
+t('backfill builds a brief from old transcripts', () => {
+  const store2 = path.join(tmpDir, 'store2.json');
+  const out = runNode(`
+    const {VoiceMemory} = require('./src/index');
+    const vm = new VoiceMemory({storePath: '${store2}'});
+    const b = vm.backfill('caller-9', [
+      {transcript: 'Caller: I prefer email.'},
+      {transcript: 'Caller: still waiting on the contract.'}
+    ]);
+    console.log(JSON.stringify({calls: b.callCount, prefs: b.preferences.length,
+      threads: b.openThreads.length, inj: vm.buildInjection('caller-9').length > 0}));
+  `);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.deepStrictEqual([r.calls, r.prefs, r.threads, r.inj], [2, 1, 1, true]);
+});
+
+console.log('e2e: python pipecat adapter');
+function runPython(script) {
+  const f = path.join(tmpDir, 'py-' + Math.random().toString(36).slice(2) + '.py');
+  fs.writeFileSync(f, script, 'utf8');
+  return execFileSync('python3', [f], { encoding: 'utf8' });
+}
+t('adapter records, injects, and plans flow', () => {
+  const store3 = path.join(tmpDir, 'store3.json');
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import VoiceMemoryPipeline
+vm = VoiceMemoryPipeline(store_path='${store3}', caller_id_fn=lambda: 'py-1')
+vm.session_end('Caller: Hi, my name is Ana. I prefer morning calls. My ssn is 123-45-6789.')
+inj = vm.session_start()
+brief = vm.get_brief()
+steps = vm.plan_flow([{'id': 'x', 'label': 'Ask time', 'keywords': ['morning calls']}])
+import json
+print(json.dumps({
+  'calls': brief['callCount'], 'name': brief['displayName'],
+  'injHasPref': 'morning calls' in inj, 'ssnGone': '123-45-6789' not in json.dumps(brief),
+  'skip': steps[0]['skippable'],
+}))
+`;
+  const out = runPython(script);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.calls, 1);
+  assert.strictEqual(r.name, 'Ana');
+  assert.strictEqual(r.injHasPref, true);
+  assert.strictEqual(r.ssnGone, true);
+  assert.strictEqual(r.skip, true);
+});
+
+t('adapter persists across instances', () => {
+  const store3 = path.join(tmpDir, 'store3.json');
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import VoiceMemoryPipeline
+vm = VoiceMemoryPipeline(store_path='${store3}', caller_id_fn=lambda: 'py-1')
+print(vm.session_start() != '')
+`;
+  const out = runPython(script);
+  assert.strictEqual(out.trim().split('\n').pop(), 'True');
+});
+
+console.log(`\ne2e: ${passed} passed${process.exitCode ? ' (FAILURES)' : ''}`);

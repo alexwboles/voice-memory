@@ -164,4 +164,51 @@ print(vm.session_start() != '')
   assert.strictEqual(out.trim().split('\n').pop(), 'True');
 });
 
+t('adapter: caller-id normalization collapses phone formats', () => {
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import normalize_caller_id, VoiceMemoryPipeline
+assert normalize_caller_id('+1 (555) 123-4567') == '5551234567'
+assert normalize_caller_id('15551234567') == '5551234567'
+assert normalize_caller_id(' Support-Desk ') == 'support-desk'
+store = '${path.join(tmpDir, 'store-py-norm.json')}'
+vm = VoiceMemoryPipeline(store_path=store, caller_id_fn=lambda: '+1 (555) 123-4567')
+vm.session_end('Caller: I prefer text messages.')
+vm2 = VoiceMemoryPipeline(store_path=store, caller_id_fn=lambda: '5551234567')
+b = vm2.get_brief()
+import json
+print(json.dumps({'calls': b['callCount'], 'key': b['callerId'], 'callers': len(vm2._data['callers'])}))
+`;
+  const out = runPython(script);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.calls, 1);
+  assert.strictEqual(r.key, '5551234567');
+  assert.strictEqual(r.callers, 1);
+});
+
+t('adapter: resolve_thread closes an open thread', () => {
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import VoiceMemoryPipeline
+import json
+store = '${path.join(tmpDir, 'store-py-resolve.json')}'
+vm = VoiceMemoryPipeline(store_path=store, caller_id_fn=lambda: 'py-resolve')
+vm.session_end('Caller: I am still waiting on the March invoice.')
+closed = vm.resolve_thread('march invoice')
+b = vm.get_brief()
+print(json.dumps({
+  'closed': bool(closed) and closed['text'].startswith('Resolved: '),
+  'openLeft': len(b['openThreads']),
+  'resolvedHas': any('march invoice' in r['text'].lower() for r in b['resolvedItems']),
+  'miss': vm.resolve_thread('no such thread') is None,
+}))
+`;
+  const out = runPython(script);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.closed, true);
+  assert.strictEqual(r.openLeft, 0);
+  assert.strictEqual(r.resolvedHas, true);
+  assert.strictEqual(r.miss, true);
+});
+
 console.log(`\ne2e: ${passed} passed${process.exitCode ? ' (FAILURES)' : ''}`);

@@ -158,6 +158,18 @@ def _utcnow():
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_caller_id(caller_id):
+    """Collapse phone-like IDs to bare digits ("+1 (555) 123-4567" ==
+    "15551234567" == "5551234567"); anything else is trimmed+lowercased."""
+    raw = str(caller_id or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) >= 7:
+        if len(digits) == 11 and digits[0] == "1":
+            return digits[1:]
+        return digits
+    return raw.lower()
+
+
 def _blank_brief(caller_id):
     return {
         "callerId": caller_id,
@@ -210,6 +222,7 @@ class VoiceMemoryPipeline:
             raise
 
     def _brief(self, caller_id):
+        caller_id = normalize_caller_id(caller_id)
         b = self._data["callers"].get(caller_id)
         if b is None:
             b = _blank_brief(caller_id)
@@ -243,7 +256,7 @@ class VoiceMemoryPipeline:
     # -- lifecycle -------------------------------------------------------
     def session_end(self, transcript):
         """Call when the pipeline ends. Extracts, redacts, persists."""
-        caller_id = self.caller_id_fn()
+        caller_id = normalize_caller_id(self.caller_id_fn())
         clean = redact(transcript or "", enabled=self.redact_pii)
         prefs, threads, resolved, facts, name = _extract(clean)
         b = self._brief(caller_id)
@@ -268,12 +281,42 @@ class VoiceMemoryPipeline:
         return self.get_brief(caller_id)
 
     def get_brief(self, caller_id=None):
-        caller_id = caller_id or self.caller_id_fn()
+        caller_id = normalize_caller_id(caller_id or self.caller_id_fn())
         b = self._data["callers"].get(caller_id)
         if not b:
             return None
         self._prune(b)
         return json.loads(json.dumps(b))
+
+    def resolve_thread(self, thread_text, caller_id=None):
+        """Manually close an open thread (normalized-text or substring match).
+        Returns the closed thread entry, or None when nothing matched."""
+        caller_id = normalize_caller_id(caller_id or self.caller_id_fn())
+        b = self._data["callers"].get(caller_id)
+        if not b:
+            return None
+        needle = self._norm(thread_text or "")
+        if not needle:
+            return None
+        idx = next(
+            (i for i, t in enumerate(b["openThreads"])
+             if self._norm(t["text"]) == needle
+             or needle in self._norm(t["text"])
+             or self._norm(t["text"]) in needle),
+            None,
+        )
+        if idx is None:
+            return None
+        closed = b["openThreads"].pop(idx)
+        entry = self._upsert(
+            b["resolvedItems"], "Resolved: " + closed["text"],
+            resolvedAt=_utcnow(),
+            expiresAt=(datetime.now(timezone.utc) + self.ttl).isoformat(),
+            source="manual",
+        )
+        b["updatedAt"] = _utcnow()
+        self._save()
+        return json.loads(json.dumps(entry))
 
     def session_start(self, max_chars=1200):
         """Injection block for the system prompt ("" when caller is new)."""

@@ -193,4 +193,62 @@ t('requires callerId', () => {
   assert.throws(() => vm.recordCall('', { transcript: 'hi' }), /callerId/);
 });
 
+t('normalizeCallerId collapses phone formats, trims/lowercases the rest', () => {
+  const { normalizeCallerId } = require('../src/index');
+  assert.strictEqual(normalizeCallerId('+1 (555) 123-4567'), '5551234567');
+  assert.strictEqual(normalizeCallerId('15551234567'), '5551234567');
+  assert.strictEqual(normalizeCallerId('555-123-4567'), '5551234567');
+  assert.strictEqual(normalizeCallerId('  Alex@Example.com '), 'alex@example.com');
+  assert.strictEqual(normalizeCallerId('support-desk'), 'support-desk');
+});
+t('recordCall with different caller-ID formats lands on one brief', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('+1 (555) 123-4567', { transcript: 'Caller: I prefer text messages.' });
+  const b = vm.recordCall('5551234567', { transcript: 'Caller: My name is Priya.' });
+  assert.strictEqual(b.callCount, 2, 'two calls on one brief');
+  assert.strictEqual(b.callerId, '5551234567', 'brief keyed by normalized id');
+  assert.deepStrictEqual(vm.listCallers(), ['5551234567']);
+  assert.strictEqual(vm.getBrief('15551234567').callCount, 2, 'lookup normalizes too');
+});
+t('mergeCallers combines briefs and deletes the source', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('aaa', { transcript: 'Caller: I prefer text messages. I am still waiting on the March invoice.' });
+  vm.recordCall('bbb', { transcript: 'Caller: I prefer TEXT messages. My timezone is Eastern.' });
+  const merged = vm.mergeCallers('bbb', 'aaa');
+  assert.strictEqual(merged.callCount, 2, 'call counts add up');
+  const prefs = merged.preferences.filter((p) => /text messages/i.test(p.text));
+  assert.strictEqual(prefs.length, 1, 'duplicate preference deduped: ' + JSON.stringify(merged.preferences));
+  assert.ok(merged.openThreads.some((t) => /march invoice/i.test(t.text)), 'threads carried over');
+  assert.ok(merged.facts.some((f) => /eastern/i.test(f.text)), 'facts carried over');
+  assert.strictEqual(vm.getBrief('bbb'), null, 'source brief deleted');
+  assert.deepStrictEqual(vm.listCallers(), ['aaa']);
+});
+t('mergeCallers with missing source is a no-op', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('aaa', { transcript: 'Caller: I prefer text messages.' });
+  const merged = vm.mergeCallers('ghost', 'aaa');
+  assert.strictEqual(merged.callCount, 1);
+});
+t('resolveThread closes an open thread and files it as resolved', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('c1', { transcript: 'Caller: I am still waiting on the March invoice.' });
+  assert.ok(vm.getBrief('c1').openThreads.some((t) => /march invoice/i.test(t.text)), 'thread starts open');
+  const closed = vm.resolveThread('c1', 'march invoice');
+  assert.ok(closed && /Resolved: /i.test(closed.text), 'returns the closed entry');
+  const b = vm.getBrief('c1');
+  assert.strictEqual(b.openThreads.length, 0, 'thread removed from open');
+  assert.ok(b.resolvedItems.some((r) => /march invoice/i.test(r.text)), 'filed as resolved');
+  assert.strictEqual(vm.resolveThread('c1', 'no such thread'), null, 'no match -> null');
+});
+t('staleThreads flags threads untouched for N days', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('c1', { transcript: 'Caller: I am still waiting on the March invoice.' });
+  const b = vm.store.getCaller('c1');
+  b.openThreads[0].lastMentionedAt = new Date(Date.now() - 20 * 24 * 3600 * 1000).toISOString();
+  vm.store.save();
+  assert.strictEqual(vm.staleThreads('c1', 14).length, 1, 'stale at 14 days');
+  assert.strictEqual(vm.staleThreads('c1', 30).length, 0, 'fresh at 30 days');
+  assert.deepStrictEqual(vm.staleThreads('ghost'), [], 'unknown caller -> []');
+});
+
 console.log(`\nsmoke: ${passed} passed${process.exitCode ? ' (FAILURES)' : ''}`);

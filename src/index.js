@@ -1,5 +1,5 @@
 'use strict';
 
-const { VoiceMemory } = require('./memory');
+const { VoiceMemory, normalizeCallerId, DEFAULT_TTL_DAYS } = require('./memory');
 
-module.exports = { VoiceMemory };
+module.exports = { VoiceMemory, normalizeCallerId, DEFAULT_TTL_DAYS };

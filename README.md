@@ -42,6 +42,39 @@ const steps = vm.planFlow('+15551234567', [
 vm.backfill('+15551234567', [{ transcript: oldCall1 }, { transcript: oldCall2 }]);
 ```
 
+
+## API
+
+```js
+const { VoiceMemory, normalizeCallerId } = require('voice-memory');
+
+const vm = new VoiceMemory({ storePath: './voice-memory.json' });
+
+// Caller IDs are normalized: '+1 (555) 123-4567', '15551234567' and
+// '555-123-4567' all map to one brief.
+vm.recordCall('+15551234567', { transcript });   // end of call
+vm.buildInjection('+15551234567');               // start of next call
+vm.planFlow('+15551234567', steps);              // skippable flow steps
+vm.backfill('+15551234567', [{ transcript, at }]); // replay old calls
+
+// Same person, two numbers -> merge into one brief (source is deleted).
+vm.mergeCallers('5559990000', '5551234567');
+
+// Close an open thread by hand; files it as a resolved item.
+vm.resolveThread('+15551234567', 'march invoice');
+
+// Open threads untouched for N days (default 14) — "never got back" nudges.
+vm.staleThreads('+15551234567');
+
+vm.exportMarkdown('+15551234567');  // audit-friendly brief
+vm.listCallers();                   // normalized caller IDs
+vm.deleteCaller('+15551234567');
+normalizeCallerId('+1 (555) 123-4567'); // -> '5551234567'
+```
+
+The Pipecat adapter mirrors the same lifecycle, including
+`normalize_caller_id` and `vm.resolve_thread(text)`.
+
 ## Pipecat
 
 `pipecat/voice_memory.py` is a stdlib-only adapter with the same lifecycle:
@@ -69,8 +102,8 @@ injects it at call 2 start, and shows skippable flow steps.
 ## Tests
 
 ```
-npm run smoke   # 32 unit assertions
-npm run e2e     # 8 end-to-end (multi-process persistence, backfill, Python adapter)
+npm run smoke   # 38 unit assertions
+npm run e2e     # 10 end-to-end (multi-process persistence, backfill, Python adapter)
 npm test        # both
 ```
 

@@ -17,6 +17,22 @@ const { redact } = require('./redact');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_TTL_DAYS = 30;
 
+/**
+ * Normalize a caller ID so the same person reached via different formats
+ * maps to one brief. Phone-like IDs collapse to bare digits (NANP leading-1
+ * dropped: "+1 (555) 123-4567" == "15551234567" == "5551234567").
+ * Anything else is trimmed and lowercased.
+ */
+function normalizeCallerId(id) {
+  const raw = String(id || '').trim();
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length >= 7) {
+    if (digits.length === 11 && digits[0] === '1') return digits.slice(1);
+    return digits;
+  }
+  return raw.toLowerCase();
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -58,13 +74,20 @@ class VoiceMemory {
     this.resolvedItemTTL = (options.resolvedItemTTLdays ?? DEFAULT_TTL_DAYS) * DAY_MS;
     this.saveOnRecall = options.saveOnRecall !== false; // separate toggles
     this.recallOnInject = options.recallOnInject !== false;
+    this.staleThreadDays = options.staleThreadDays ?? 14;
+  }
+
+  _id(callerId) {
+    if (!callerId) throw new Error('callerId is required');
+    return normalizeCallerId(callerId);
   }
 
   _brief(callerId) {
-    let b = this.store.getCaller(callerId);
+    const id = this._id(callerId);
+    let b = this.store.getCaller(id);
     if (!b) {
-      b = blankBrief(callerId);
-      this.store.setCaller(callerId, b);
+      b = blankBrief(id);
+      this.store.setCaller(id, b);
     }
     return b;
   }
@@ -105,17 +128,17 @@ class VoiceMemory {
    * extracted, merged into the caller's brief, and persisted.
    */
   recordCall(callerId, { transcript, at } = {}) {
-    if (!callerId) throw new Error('recordCall: callerId is required');
+    const id = this._id(callerId);
     const clean = redact(transcript || '', { enabled: this.redactPII });
     const extracted = extract(clean);
-    const b = this._brief(callerId);
+    const b = this._brief(id);
     const source = 'call-' + (b.callCount + 1);
     this._merge(b, extracted, source);
     b.callCount += 1;
     if (at) b.updatedAt = new Date(at).toISOString();
     this._prune(b);
-    this.store.setCaller(callerId, b);
-    return this.getBrief(callerId);
+    this.store.setCaller(id, b);
+    return this.getBrief(id);
   }
 
   /** Replay old transcripts in order — same code path as live recording. */
@@ -131,7 +154,7 @@ class VoiceMemory {
 
   /** Read-only view of a caller's brief (prunes expired resolved items). */
   getBrief(callerId) {
-    const b = this.store.getCaller(callerId);
+    const b = this.store.getCaller(this._id(callerId));
     if (!b) return null;
     this._prune(b);
     return JSON.parse(JSON.stringify(b));
@@ -216,8 +239,87 @@ class VoiceMemory {
   }
 
   deleteCaller(callerId) {
-    return this.store.deleteCaller(callerId);
+    return this.store.deleteCaller(this._id(callerId));
+  }
+
+  /**
+   * Merge one caller's brief into another's (e.g. they called from two
+   * numbers). Lists dedupe by normalized text keeping the earliest
+   * addedAt; call counts add up; the source brief is deleted.
+   * Returns the merged brief, or null when the source brief is missing.
+   */
+  mergeCallers(fromId, intoId) {
+    const from = this._id(fromId);
+    const into = this._id(intoId);
+    if (from === into) return this.getBrief(into);
+    const src = this.store.getCaller(from);
+    if (!src) return this.getBrief(into);
+    const dst = this._brief(into);
+    const mergeList = (key) => {
+      for (const e of src[key] || []) {
+        const n = norm(e.text);
+        const ex = dst[key].find((x) => norm(x.text) === n);
+        if (ex) {
+          if (e.addedAt && (!ex.addedAt || e.addedAt < ex.addedAt)) ex.addedAt = e.addedAt;
+          if (e.lastMentionedAt && (!ex.lastMentionedAt || e.lastMentionedAt > ex.lastMentionedAt)) {
+            ex.lastMentionedAt = e.lastMentionedAt;
+          }
+        } else {
+          dst[key].push({ ...e });
+        }
+      }
+    };
+    for (const k of ['preferences', 'openThreads', 'resolvedItems', 'facts']) mergeList(k);
+    dst.callCount = (dst.callCount || 0) + (src.callCount || 0);
+    if (!dst.displayName && src.displayName) dst.displayName = src.displayName;
+    if (src.createdAt && (!dst.createdAt || src.createdAt < dst.createdAt)) dst.createdAt = src.createdAt;
+    if (src.updatedAt && (!dst.updatedAt || src.updatedAt > dst.updatedAt)) dst.updatedAt = src.updatedAt;
+    this._prune(dst);
+    this.store.setCaller(into, dst);
+    this.store.deleteCaller(from);
+    return this.getBrief(into);
+  }
+
+  /**
+   * Manually close an open thread (matched by normalized text or substring).
+   * Moves it to resolved items with the standard TTL. Returns the closed
+   * thread entry, or null when nothing matched.
+   */
+  resolveThread(callerId, threadText) {
+    const id = this._id(callerId);
+    const b = this.store.getCaller(id);
+    if (!b) return null;
+    const needle = norm(threadText || '');
+    if (!needle) return null;
+    const idx = b.openThreads.findIndex(
+      (t) => norm(t.text) === needle || norm(t.text).includes(needle) || needle.includes(norm(t.text))
+    );
+    if (idx === -1) return null;
+    const [closed] = b.openThreads.splice(idx, 1);
+    const entry = upsertUnique(b.resolvedItems, 'Resolved: ' + closed.text, {
+      resolvedAt: nowIso(),
+      expiresAt: new Date(Date.now() + this.resolvedItemTTL).toISOString(),
+      source: 'manual',
+    });
+    b.updatedAt = nowIso();
+    this._prune(b);
+    this.store.setCaller(id, b);
+    return JSON.parse(JSON.stringify(entry));
+  }
+
+  /**
+   * Open threads not mentioned in `days` days (default: staleThreadDays).
+   * Useful for "you never got back to them about X" nudges.
+   */
+  staleThreads(callerId, days) {
+    const id = this._id(callerId);
+    const b = this.store.getCaller(id);
+    if (!b) return [];
+    const cutoff = Date.now() - (days ?? this.staleThreadDays) * DAY_MS;
+    return b.openThreads
+      .filter((t) => new Date(t.lastMentionedAt || t.addedAt || 0).getTime() < cutoff)
+      .map((t) => JSON.parse(JSON.stringify(t)));
   }
 }
 
-module.exports = { VoiceMemory, DEFAULT_TTL_DAYS };
+module.exports = { VoiceMemory, DEFAULT_TTL_DAYS, normalizeCallerId };

@@ -96,8 +96,18 @@ vm.plan_flow([...])                   # before scripted flows
 npm run demo
 ```
 
-Runs two mock calls: records a brief after call 1 (watch the PII redaction),
-injects it at call 2 start, and shows skippable flow steps.
+A guided five-minute tour with two mock calls from the same caller:
+
+1. **Record** — call 1 ends; the transcript is PII-redacted (watch the email)
+   and merged into a structured brief: preferences, open threads, resolved
+   items, facts.
+2. **Inject** — call 2 starts; the brief renders as a compact system-prompt
+   block so the agent "remembers" the caller.
+3. **Plan** — scripted flow steps are marked SKIP/ASK from memory
+   (open threads never skip — they need follow-up).
+4. **Export** — the brief as a portable Markdown document.
+
+The store is a single human-readable JSON file (`demo/demo-store.json`).
 
 ## Tests
 

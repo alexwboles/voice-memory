@@ -84,14 +84,19 @@ def redact(text: str, enabled: bool = True) -> str:
     return text
 
 
+# Mirror the Node extractor: preference polarity is decided by negation words
+# in the whole sentence ("hate", "dislike", "don't", "never" -> Avoid).
+_NEG_RE = re.compile(r"hate|dislike|don'?t|never", re.I)
 _PREF_RES = [
-    (re.compile(r"\bi prefer ([^.?!;]+)", re.I), "Prefers: "),
-    (re.compile(r"\bmy favo[u]?rite ([^.?!;]+)", re.I), "Prefers: "),
-    (re.compile(r"\bi like ([^.?!;]+)", re.I), "Prefers: "),
-    (re.compile(r"\bi (?:hate|dislike) ([^.?!;]+)", re.I), "Avoid: "),
-    (re.compile(r"\bdon'?t call me ([^.?!;]+)", re.I), "Avoid: "),
-    (re.compile(r"\bcall me ([^.?!;]+)", re.I), "Prefers: "),
-    (re.compile(r"\bplease (?:always|never) ([^.?!;]+)", re.I), "Prefers: "),
+    re.compile(r"\bi prefer ([^.?!;]+)", re.I),
+    re.compile(r"\bmy favo[u]?rite ([^.?!;]+)", re.I),
+    re.compile(r"\bi like ([^.?!;]+)", re.I),
+    re.compile(r"\bi love ([^.?!;]+)", re.I),
+    re.compile(r"\bi (?:hate|dislike) ([^.?!;]+)", re.I),
+    re.compile(r"\bdon'?t call me ([^.?!;]+)", re.I),
+    re.compile(r"\bcall me ([^.?!;]+)", re.I),
+    re.compile(r"\bplease (?:always|never) ([^.?!;]+)", re.I),
+    re.compile(r"\bremind me to ([^.?!;]+)", re.I),
 ]
 _THREAD_RES = [
     re.compile(r"\bi'?ll follow up (?:on|about) ([^.?!;]+)", re.I),
@@ -110,6 +115,8 @@ _FACT_RES = [
     re.compile(r"\bmy account ([^.?!;]+)", re.I),
     re.compile(r"\bi'?m on the ([^.?!;]+?) plan", re.I),
     re.compile(r"\bmy timezone is ([^.?!;]+)", re.I),
+    # Mirrors the Node extractor: "my name is" is excluded — displayName covers it.
+    re.compile(r"\bmy (?:identity|email|phone) is ([^.?!;]+)", re.I),
 ]
 _NAME_RES = [
     re.compile(r"\bmy name is ([A-Z][a-z]+(?: [A-Z][a-z]+)?)"),
@@ -129,9 +136,10 @@ def _extract(transcript):
     text = str(transcript or "")
     preferences, threads, facts = [], [], []
     for s in _sentences(text):
-        for rx, prefix in _PREF_RES:
+        for rx in _PREF_RES:
             m = rx.search(s)
             if m and len(_clean(m.group(1))) > 2:
+                prefix = "Avoid: " if _NEG_RE.search(s) else "Prefers: "
                 preferences.append(prefix + _clean(m.group(1)))
                 break
         for rx in _THREAD_RES:

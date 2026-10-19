@@ -88,6 +88,17 @@ t('extracts display name', () => {
   const e = extract('Caller: Hi, my name is Maya.');
   assert.strictEqual(e.displayName, 'Maya');
 });
+t('name intro is not stored as a fact (displayName covers it)', () => {
+  const e = extract('Caller: Hi, my name is Maya. I prefer morning calls.');
+  assert.strictEqual(e.displayName, 'Maya');
+  assert.ok(!e.facts.some((f) => /maya/i.test(f)), 'name must not leak into facts');
+});
+t('index re-exports normalizeCallerId and DEFAULT_TTL_DAYS', () => {
+  const idx = require('../src/index');
+  assert.strictEqual(typeof idx.VoiceMemory, 'function');
+  assert.strictEqual(typeof idx.normalizeCallerId, 'function');
+  assert.strictEqual(idx.DEFAULT_TTL_DAYS, 30);
+});
 t('empty transcript extracts nothing', () => {
   const e = extract('');
   assert.deepStrictEqual([e.preferences, e.openThreads, e.resolvedItems, e.facts], [[], [], [], []]);
@@ -249,6 +260,14 @@ t('staleThreads flags threads untouched for N days', () => {
   assert.strictEqual(vm.staleThreads('c1', 14).length, 1, 'stale at 14 days');
   assert.strictEqual(vm.staleThreads('c1', 30).length, 0, 'fresh at 30 days');
   assert.deepStrictEqual(vm.staleThreads('ghost'), [], 'unknown caller -> []');
+});
+
+t('deleteCaller removes the brief', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('c1', { transcript: 'Caller: I prefer texts.' });
+  assert.strictEqual(vm.deleteCaller('c1'), true);
+  assert.strictEqual(vm.getBrief('c1'), null);
+  assert.strictEqual(vm.deleteCaller('c1'), false);
 });
 
 console.log(`\nsmoke: ${passed} passed${process.exitCode ? ' (FAILURES)' : ''}`);

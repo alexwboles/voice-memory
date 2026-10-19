@@ -49,7 +49,9 @@ const FACT_RES = [
   /\bi'?m on the ([^.?!;]+?) plan/i,
   /\bmy timezone is ([^.?!;]+)/i,
   /\bi live in ([^.?!;]+)/i,
-  /\bmy (?:name|identity|email|phone) is ([^.?!;]+)/i,
+  // Note: "my name is X" is intentionally excluded — the name is captured
+  // as displayName instead; storing the intro sentence as a fact is noise.
+  /\bmy (?:identity|email|phone) is ([^.?!;]+)/i,
 ];
 
 const NAME_RES = [

@@ -152,6 +152,55 @@ print(json.dumps({
   assert.strictEqual(r.skip, true);
 });
 
+t('adapter: negation words flip preference polarity', () => {
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import VoiceMemoryPipeline
+import json
+store = '${path.join(tmpDir, 'store-py-neg.json')}'
+vm = VoiceMemoryPipeline(store_path=store, caller_id_fn=lambda: 'py-neg')
+b = vm.session_end('Caller: Hi, my name is Ana. Please never call after 6pm.')
+print(json.dumps({'prefs': b['preferences']}))
+`;
+  const out = runPython(script);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.ok(r.prefs.some((p) => p['text'].startsWith('Avoid:') && /after 6pm/.test(p['text'])),
+    'negated preference must be an Avoid: ' + JSON.stringify(r.prefs));
+});
+
+t('adapter: backfill builds a brief from old transcripts', () => {
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import VoiceMemoryPipeline
+import json
+store = '${path.join(tmpDir, 'store-py-backfill.json')}'
+vm = VoiceMemoryPipeline(store_path=store, caller_id_fn=lambda: 'py-bf')
+b = vm.backfill([{'transcript': 'Caller: I prefer email.'},
+                 {'transcript': 'Caller: still waiting on the contract.'}])
+print(json.dumps({'calls': b['callCount'],
+                  'prefs': len(b['preferences']),
+                  'threads': len(b['openThreads']),
+                  'inj': len(vm.session_start()) > 0}))
+`;
+  const out = runPython(script);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.deepStrictEqual([r.calls, r.prefs, r.threads, r.inj], [2, 1, 1, true]);
+});
+
+t('adapter: redact_pii=False keeps PII in the brief', () => {
+  const script = `
+import sys; sys.path.insert(0, '${path.join(ROOT, 'pipecat')}')
+from voice_memory import VoiceMemoryPipeline
+import json
+store = '${path.join(tmpDir, 'store-py-noredact.json')}'
+vm = VoiceMemoryPipeline(store_path=store, caller_id_fn=lambda: 'py-nr', redact_pii=False)
+b = vm.session_end('Caller: my email is ana@example.com.')
+print(json.dumps({'raw': 'ana@example.com' in json.dumps(b)}))
+`;
+  const out = runPython(script);
+  assert.strictEqual(JSON.parse(out.trim().split('\n').pop()).raw, true);
+});
+
 t('adapter persists across instances', () => {
   const store3 = path.join(tmpDir, 'store3.json');
   const script = `

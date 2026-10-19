@@ -6,6 +6,14 @@ repo is archived and read-only.
 
 The merge is a feature union, not just a dedupe:
 
+## Contents
+
+- [Store migration](#store-migration)
+- [Field mapping (callrecall-ai → voice-memory v2)](#field-mapping-callrecall-ai--voice-memory-v2)
+- [Python API mapping](#python-api-mapping)
+- [Behavior changes to know about](#behavior-changes-to-know-about)
+- [JS API mapping](#js-api-mapping)
+
 | Kept from voice-memory | Kept from callrecall-ai |
 |---|---|
 | JS SDK, single brief schema + SPEC | Python SDK, Pipecat + LiveKit adapters |

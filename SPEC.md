@@ -10,6 +10,23 @@ Two SDKs, one spec, one brief schema:
 - **Python SDK** (`python-sdk/voice_memory/`) — `VoiceMemory` class, plus
   Pipecat and LiveKit adapters (`voice_memory.adapters`).
 
+## Contents
+
+- [1. Architecture](#1-architecture)
+- [2. Data model — the caller brief (schema v2)](#2-data-model--the-caller-brief-schema-v2)
+- [3. Transcript extraction (heuristic, deterministic)](#3-transcript-extraction-heuristic-deterministic)
+  - [3a. LLM extractor hook (optional)](#3a-llm-extractor-hook-optional)
+- [4. Session-start injection](#4-session-start-injection)
+- [5. Skippable flow steps](#5-skippable-flow-steps)
+- [6. Caller lifecycle extras](#6-caller-lifecycle-extras)
+- [7. Transcript backfill](#7-transcript-backfill)
+- [8. PII redaction — ON by default](#8-pii-redaction--on-by-default)
+- [9. Storage — single local file (v2)](#9-storage--single-local-file-v2)
+- [10. SDK API map](#10-sdk-api-map)
+- [11. Adapters (Python)](#11-adapters-python)
+- [12. Non-goals (v2)](#12-non-goals-v2)
+- [13. Acceptance](#13-acceptance)
+
 ## 1. Architecture
 
 ```
@@ -205,7 +222,9 @@ One JSON file (default `./voice-memory.json`):
   to the v2 shape automatically — contact keys are normalized (colliding keys
   merge), `valid_until` → `expiresAt`, `resolved` → `resolvedItems`. A
   standalone CLI is also available:
-  `python -m voice_memory.migrate legacy.json voice-memory.json`.
+  `python -m voice_memory.migrate legacy.json voice-memory.json`
+  (see README's [Install](../README.md#install) for how to make the package
+  importable).
 
 ## 10. SDK API map
 

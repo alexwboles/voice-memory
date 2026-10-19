@@ -1,5 +1,7 @@
 'use strict';
 
 const { VoiceMemory, normalizeCallerId, DEFAULT_TTL_DAYS } = require('./memory');
+const { normalizeTurns } = require('./extract');
+const { redactNames } = require('./redact');
 
-module.exports = { VoiceMemory, normalizeCallerId, DEFAULT_TTL_DAYS };
+module.exports = { VoiceMemory, normalizeCallerId, DEFAULT_TTL_DAYS, normalizeTurns, redactNames };

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-memory"
+version = "2.0.0"
+description = "Free, self-hosted voice-agent memory layer: per-caller briefs in one JSON file. JS + Python SDKs, Pipecat + LiveKit adapters. MIT, zero dependencies."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "TechPartner" }]
+keywords = ["voice-ai", "memory", "pipecat", "livekit", "call-center", "agents"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Communications :: Telephony",
+]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+pipecat = ["pipecat-ai>=0.0.70"]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/alexwboles/voice-memory"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["voice_memory*"]

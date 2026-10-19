@@ -12,6 +12,9 @@ const SSN_RE = /\b\d{3}-\d{2}-\d{4}\b/g;
 // US-style phones: (555) 123-4567, 555-123-4567, 555.123.4567, +1 555 123 4567
 const PHONE_RE = /(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}\b/g;
 const ACCOUNT_RE = /\b(?:account|acct|policy|member)(?:\s*(?:number|no|#))?\s*[:#]?\s*[A-Za-z0-9-]{4,}\b/gi;
+// Crude street address: number + words + street suffix; zip codes ride along.
+const ADDRESS_RE = /\b\d{1,5}\s+(?:[A-Za-z]+\s+){1,4}(?:street|st|avenue|ave|road|rd|lane|ln|drive|dr|boulevard|blvd|court|ct|place|pl|terrace|ter|way|circle|cir|parkway|pkwy)\b\.?/gi;
+const ZIP_RE = /\b\d{5}(?:-\d{4})?\b/;
 
 function luhnOk(digits) {
   let sum = 0;
@@ -49,7 +52,28 @@ function redact(text, { enabled = true } = {}) {
       // Keep the label, drop the number: "account #12345" -> "account [account]"
       const label = m.match(/^(account|acct|policy|member)/i);
       return (label ? label[1] : 'account') + ' [account]';
-    });
+    })
+    .replace(ADDRESS_RE, '[address]')
+    // a zip glued to a redacted address line is part of the address
+    .replace(/\[address\][,\s]*\b\d{5}(?:-\d{4})?\b/g, '[address]');
 }
 
-module.exports = { redact, EMAIL_RE, SSN_RE, PHONE_RE, CARD_RE, ACCOUNT_RE };
+// Opt-in stricter mode (redactNames: true): mask person names too — two or
+// more consecutive capitalized words, with a small allowlist for common
+// false positives (days, months). Identity fields are never touched.
+const NAME_STOPWORDS = new Set([
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+  'september', 'october', 'november', 'december',
+  'main street', 'high street', 'first avenue',
+]);
+const NAME_PAIR_RE = /\b([A-Z][a-z]{1,}(?:\s+[A-Z][a-z]{1,})+)\b/g;
+
+function redactNames(text) {
+  if (typeof text !== 'string') return text;
+  return text.replace(NAME_PAIR_RE, (m) =>
+    NAME_STOPWORDS.has(m.toLowerCase()) ? m : '[name]'
+  );
+}
+
+module.exports = { redact, redactNames, EMAIL_RE, SSN_RE, PHONE_RE, CARD_RE, ACCOUNT_RE, ADDRESS_RE, ZIP_RE };

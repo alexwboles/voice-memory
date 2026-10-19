@@ -84,7 +84,7 @@ t('process 3 records call 2, open thread persists, resolution recorded', () => {
 
 t('store file is valid JSON with expected shape', () => {
   const data = JSON.parse(fs.readFileSync(STORE, 'utf8'));
-  assert.strictEqual(data.version, 1);
+  assert.strictEqual(data.version, 2);
   assert.ok(data.callers['caller-1']);
   assert.strictEqual(data.callers['caller-1'].displayName, 'Priya');
 });
@@ -258,6 +258,87 @@ print(json.dumps({
   assert.strictEqual(r.openLeft, 0);
   assert.strictEqual(r.resolvedHas, true);
   assert.strictEqual(r.miss, true);
+});
+
+console.log('e2e: python-sdk (voice_memory package)');
+function runSdkPython(script) {
+  const f = path.join(tmpDir, 'sdk-' + Math.random().toString(36).slice(2) + '.py');
+  const wrapped = `import sys; sys.path.insert(0, '${path.join(ROOT, 'python-sdk')}')\n` + script;
+  fs.writeFileSync(f, wrapped, 'utf8');
+  return execFileSync('python3', [f], { encoding: 'utf8' });
+}
+t('sdk: record/inject/search across instances', () => {
+  const store = path.join(tmpDir, 'sdk.json');
+  const out = runSdkPython(`
+from voice_memory import VoiceMemory
+vm = VoiceMemory(path='${store}')
+vm.record_call('+1 (555) 000-1111', 'Caller: Hi, my name is Zoe. I prefer texts. My package never arrived.')
+vm2 = VoiceMemory(path='${store}')
+inj = vm2.build_injection('5550001111')
+hits = vm2.search('problem with delivery')
+import json
+print(json.dumps({'inj': 'Zoe' in inj and 'texts' in inj,
+                  'hit': hits and hits[0][0] == '5550001111',
+                  'callers': vm2.list_callers()}))
+`);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.strictEqual(r.inj, true);
+  assert.strictEqual(r.hit, true);
+  assert.deepStrictEqual(r.callers, ['5550001111']);
+});
+t('sdk: merge_callers + stale_threads + resolve_thread', () => {
+  const store = path.join(tmpDir, 'sdk2.json');
+  const out = runSdkPython(`
+from voice_memory import VoiceMemory
+import json
+vm = VoiceMemory(path='${store}')
+vm.record_call('aaa', 'Caller: I prefer texts. I am still waiting on the March invoice.')
+vm.record_call('bbb', 'Caller: I prefer TEXTS.')
+merged = vm.merge_callers('bbb', 'aaa')
+closed = vm.resolve_thread('aaa', 'march invoice')
+stale = vm.stale_threads('aaa', 0)  # 0 days -> everything is stale
+print(json.dumps({'calls': merged['callCount'], 'gone': vm.brief('bbb') is None,
+                  'closed': closed['text'].startswith('Resolved:'),
+                  'openLeft': len(vm.brief('aaa')['openThreads'])}))
+`);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.deepStrictEqual([r.calls, r.gone, r.closed, r.openLeft], [2, true, true, 0]);
+});
+t('sdk: livekit adapter session instructions + call end', () => {
+  const store = path.join(tmpDir, 'sdk3.json');
+  const out = runSdkPython(`
+from voice_memory import VoiceMemory
+from voice_memory.adapters import VoiceMemoryLiveKit
+import json
+mem = VoiceMemory(path='${store}')
+ad = VoiceMemoryLiveKit(mem)
+ad.on_call_end('lk-1', [{'role': 'user', 'content': 'I prefer morning calls.'}])
+instr = ad.session_instructions('lk-1', base_instructions='Be helpful.')
+print(json.dumps({'hasMem': 'morning calls' in instr, 'hasBase': 'Be helpful.' in instr,
+                  'empty': ad.session_instructions('new', base_instructions='Hi.') == 'Hi.'}))
+`);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.deepStrictEqual([r.hasMem, r.hasBase, r.empty], [true, true, true]);
+});
+t('sdk: legacy callrecall store migrates end to end', () => {
+  const legacy = path.join(tmpDir, 'legacy.json');
+  const dst = path.join(tmpDir, 'migrated.json');
+  fs.writeFileSync(legacy, JSON.stringify({ version: 1, contacts: {
+    '+15550002222': { contact_id: '+15550002222', display_name: 'Jo',
+      preferences: [], facts: [], open_threads: [], resolved: [],
+      call_count: 1, last_call_at: '2026-10-01T00:00:00', summary: '' },
+  } }));
+  const out = runSdkPython(`
+from voice_memory import VoiceMemory, migrate
+import json
+migrate.main(['${legacy}', '${dst}'])
+vm = VoiceMemory(path='${dst}')
+b = vm.record_call('+1 (555) 000-2222', 'Caller: I prefer email.')
+print(json.dumps({'calls': b['callCount'], 'name': b['displayName'],
+                  'inj': 'email' in vm.build_injection('5550002222')}))
+`);
+  const r = JSON.parse(out.trim().split('\n').pop());
+  assert.deepStrictEqual([r.calls, r.name, r.inj], [2, 'Jo', true]);
 });
 
 console.log(`\ne2e: ${passed} passed${process.exitCode ? ' (FAILURES)' : ''}`);

@@ -270,4 +270,111 @@ t('deleteCaller removes the brief', () => {
   assert.strictEqual(vm.deleteCaller('c1'), false);
 });
 
+console.log('extractor hook (from callrecall-ai):');
+t('hook strings merge over rule-based extraction', () => {
+  const vm = new VoiceMemory({
+    storePath: tmp(),
+    extractor: ({ transcript, turns }) => {
+      assert.ok(typeof transcript === 'string' && transcript.length > 0);
+      assert.ok(Array.isArray(turns) && turns[0].role === 'caller');
+      return { facts: ['vip customer since 2019'], openThreads: ['llm-found thread'] };
+    },
+  });
+  const b = vm.recordCall('c1', { transcript: 'Caller: I prefer email.' });
+  assert.ok(b.facts.some((f) => f.text === 'vip customer since 2019'));
+  assert.ok(b.openThreads.some((x) => x.text === 'llm-found thread'));
+  assert.ok(b.preferences.some((p) => p.text.includes('email')));
+});
+t('hook dedupes against rule-based results', () => {
+  const vm = new VoiceMemory({
+    storePath: tmp(),
+    extractor: () => ({ preferences: ['Prefers: email'] }),
+  });
+  const b = vm.recordCall('c1', { transcript: 'Caller: I prefer email.' });
+  assert.strictEqual(b.preferences.filter((p) => /email/i.test(p.text)).length, 1);
+});
+t('a throwing extractor never breaks the call', () => {
+  const vm = new VoiceMemory({
+    storePath: tmp(),
+    extractor: () => { throw new Error('llm down'); },
+  });
+  const b = vm.recordCall('c1', { transcript: 'Caller: I prefer email.' });
+  assert.strictEqual(b.callCount, 1);
+  assert.ok(b.preferences.some((p) => p.text.includes('email')));
+});
+t('hook output is PII-scrubbed before storage', () => {
+  const vm = new VoiceMemory({
+    storePath: tmp(),
+    extractor: () => ({ facts: ['reached at sneaky@example.com'] }),
+  });
+  const b = vm.recordCall('c1', { transcript: 'Caller: hi.' });
+  assert.ok(!JSON.stringify(b).includes('sneaky@example.com'));
+  assert.ok(b.facts.some((f) => f.text.includes('[email]')));
+});
+
+console.log('search:');
+t('search finds topical hits across callers', () => {
+  const vm = new VoiceMemory({ storePath: tmp() });
+  vm.recordCall('c1', { transcript: 'Caller: my package never arrived, the issue is the shipment.' });
+  vm.recordCall('c2', { transcript: 'Caller: I prefer email.' });
+  const hits = vm.search('problem with delivery');
+  assert.ok(hits.length > 0);
+  assert.strictEqual(hits[0].callerId, 'c1', 'issue/problem synonym match: ' + JSON.stringify(hits));
+  assert.ok(vm.search('nonexistent zebra query qqq').length === 0);
+});
+
+console.log('redactNames (opt-in stricter mode):');
+t('names masked when redactNames:true, kept by default', () => {
+  const strict = new VoiceMemory({ storePath: tmp(), redactNames: true });
+  const b = strict.recordCall('c1', { transcript: 'Caller: I prefer that John Smith handles my account.' });
+  assert.ok(JSON.stringify(b).includes('[name]'));
+  assert.ok(!JSON.stringify(b).includes('John Smith'));
+  const plain = new VoiceMemory({ storePath: tmp() });
+  const b2 = plain.recordCall('c1', { transcript: 'Caller: I prefer that John Smith handles my account.' });
+  assert.ok(JSON.stringify(b2).includes('John Smith'), 'names kept by default');
+});
+t('redactNames export works standalone', () => {
+  const { redactNames: rn } = require('../src/index');
+  assert.ok(rn('met with John Smith').includes('[name]'));
+});
+
+console.log('store v2 / legacy upgrade:');
+t('legacy callrecall-ai store auto-upgrades on load', () => {
+  const p = tmp();
+  fs.writeFileSync(p, JSON.stringify({
+    version: 1,
+    contacts: {
+      '+15550001111': {
+        contact_id: '+15550001111',
+        display_name: 'Sam',
+        preferences: [{ text: 'prefers text updates', source: 'call', created_at: '2026-10-01T00:00:00', valid_until: '', tags: [] }],
+        facts: [],
+        open_threads: [{ text: 'waiting on refund', source: 'call', created_at: '2026-10-02T00:00:00', valid_until: '', tags: [] }],
+        resolved: [{ text: 'resolved: login fixed', source: 'call', created_at: '2026-10-03T00:00:00', valid_until: '2026-11-03T00:00:00', tags: [] }],
+        call_count: 3,
+        last_call_at: '2026-10-03T00:00:00',
+        summary: 'Prefers: prefers text updates',
+      },
+    },
+  }));
+  const vm = new VoiceMemory({ storePath: p });
+  const b = vm.getBrief('+15550001111');
+  assert.ok(b, 'upgraded brief loads');
+  assert.strictEqual(b.callerId, '5550001111', 'legacy keys normalize on upgrade');
+  assert.strictEqual(b.displayName, 'Sam');
+  assert.strictEqual(b.callCount, 3);
+  assert.ok(b.openThreads.some((x) => x.text === 'waiting on refund' && x.status === 'open'));
+  assert.ok(b.resolvedItems.some((r) => r.expiresAt === '2026-11-03T00:00:00'));
+  const inj = vm.buildInjection('+15550001111');
+  assert.ok(inj.includes('Sam') && inj.includes('waiting on refund'));
+});
+t('new stores are written as version 2', () => {
+  const p = tmp();
+  const vm = new VoiceMemory({ storePath: p });
+  vm.recordCall('c1', { transcript: 'Caller: I prefer email.' });
+  const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.strictEqual(data.version, 2);
+  assert.ok(data.callers.c1.preferences[0].tags, 'entries carry tags');
+});
+
 console.log(`\nsmoke: ${passed} passed${process.exitCode ? ' (FAILURES)' : ''}`);

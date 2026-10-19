@@ -60,6 +60,35 @@ const NAME_RES = [
   /\bcall me ([A-Z][a-z]+)/,
 ];
 
+// Caller-reported problems: "my package never arrived" -> issue facts.
+const ISSUE_RES = [
+  /\bmy ([\w][\w\s]*?) (never arrived|hasn'?t arrived|is broken|isn'?t working|doesn'?t work|was lost|is missing|died|stopped working)\b/i,
+];
+
+const LABELED_RE = /^\s*(caller|agent)\s*:/im;
+
+/**
+ * Normalize a transcript to [{ role: 'caller'|'agent', text }].
+ * Accepts plain text with "Caller:"/"Agent:" labels; unlabeled text is
+ * treated as caller speech. (Same shape the Python SDK's extractor hook
+ * receives, so one LLM extractor can serve both SDKs.)
+ */
+function normalizeTurns(transcript) {
+  const text = String(transcript || '');
+  if (!LABELED_RE.test(text)) {
+    return text.trim() ? [{ role: 'caller', text }] : [];
+  }
+  const turns = [];
+  for (const line of text.split('\n')) {
+    const cm = line.match(/^\s*caller\s*:\s*(.+)$/i);
+    if (cm) { turns.push({ role: 'caller', text: cm[1].trim() }); continue; }
+    const am = line.match(/^\s*agent\s*:\s*(.+)$/i);
+    if (am) { turns.push({ role: 'agent', text: am[1].trim() }); continue; }
+    if (turns.length && line.trim()) turns[turns.length - 1].text += ' ' + line.trim();
+  }
+  return turns;
+}
+
 function sentences(text) {
   return text.split(/(?<=[.?!])\s+|\n+/).map((s) => s.trim()).filter(Boolean);
 }
@@ -145,6 +174,15 @@ function extractFacts(text) {
   return out;
 }
 
+function extractIssues(text) {
+  const out = [];
+  for (const s of sentences(text)) {
+    const m = s.match(ISSUE_RES[0]);
+    if (m) out.push('issue: ' + cleanCapture(m[1]) + ' ' + cleanCapture(m[2]));
+  }
+  return out;
+}
+
 function extractName(text) {
   for (const re of NAME_RES) {
     const m = text.match(re);
@@ -168,7 +206,7 @@ function extract(transcript) {
   const callerText = labeled ? callerLines.join('\n') : text;
   const preferences = extractPreferences(callerText);
   const openThreads = extractOpenThreads(callerText, { includeQuestions: labeled });
-  const facts = extractFacts(callerText);
+  const facts = [...extractFacts(callerText), ...extractIssues(callerText)];
   const { generic, matched } = extractResolved(text, openThreads);
   return {
     preferences,
@@ -179,4 +217,4 @@ function extract(transcript) {
   };
 }
 
-module.exports = { extract };
+module.exports = { extract, normalizeTurns };
